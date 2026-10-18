@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/__clerk/:path*",
+      "destination": "https://edusync-lms-backend.vercel.app/__clerk/:path*"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/"
+    }
+  ]
+}
