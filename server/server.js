@@ -22,10 +22,7 @@ import adminRouter from "./routes/adminRoutes.js";
 
 const app = express();
 
-// =====================================================
-// WEBHOOKS MUST RECEIVE RAW BODY
-// =====================================================
-
+// Webhooks must receive the raw request body.
 app.post(
   "/clerk",
   express.raw({ type: "application/json" }),
@@ -38,30 +35,36 @@ app.post(
   stripeWebhooks
 );
 
-// =====================================================
-// BASIC MIDDLEWARE
-// =====================================================
-
+// CORS configuration
 const allowedOrigins = new Set(
-  [process.env.CLIENT_URL, process.env.FRONTEND_URL, "http://localhost:5173"]
+  [
+    process.env.CLIENT_URL,
+    process.env.FRONTEND_URL,
+    "http://localhost:5173",
+  ]
     .filter(Boolean)
     .map((value) => value.replace(/\/$/, ""))
 );
 
-app.use(cors({
-  credentials: true,
-  origin(origin, callback) {
-    // Requests without Origin include server-to-server/webhook requests.
-    if (!origin || allowedOrigins.has(origin.replace(/\/$/, ""))) return callback(null, true);
-    return callback(new Error("Origin is not allowed by CORS"));
-  },
-}));
-
 app.use(
-  express.json({
-    limit: "2mb",
+  cors({
+    credentials: true,
+    origin(origin, callback) {
+      if (
+        !origin ||
+        allowedOrigins.has(origin.replace(/\/$/, ""))
+      ) {
+        return callback(null, true);
+      }
+
+      return callback(
+        new Error("Origin is not allowed by CORS")
+      );
+    },
   })
 );
+
+app.use(express.json({ limit: "2mb" }));
 
 app.use(
   express.urlencoded({
@@ -70,36 +73,40 @@ app.use(
   })
 );
 
+// Clerk middleware
 app.use(
   clerkMiddleware({
     publishableKey: process.env.CLERK_PUBLISHABLE_KEY,
     secretKey: process.env.CLERK_SECRET_KEY,
-
     frontendApiProxy: {
       enabled: true,
       path: "/__clerk",
     },
-
-    proxyUrl: process.env.CLERK_PROXY_URL || `${(process.env.CLIENT_URL || process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/$/, "")}/__clerk`,
+    proxyUrl:
+      process.env.CLERK_PROXY_URL ||
+      `${(
+        process.env.CLIENT_URL ||
+        process.env.FRONTEND_URL ||
+        "http://localhost:5173"
+      ).replace(/\/$/, "")}/__clerk`,
   })
 );
 
-// =====================================================
-// SIMPLE API RATE LIMIT GUARD
-// =====================================================
-
+// API rate limit guard
 const requestCounts = new Map();
 
 app.use("/api", (req, res, next) => {
-  const key = `${req.ip}:${Math.floor(Date.now() / 60000)}`;
-
+  const minute = Math.floor(Date.now() / 60000);
+  const key = `${req.ip}:${minute}`;
   const count = (requestCounts.get(key) || 0) + 1;
 
   requestCounts.set(key, count);
 
   if (requestCounts.size > 10000) {
     for (const existingKey of requestCounts.keys()) {
-      if (!existingKey.endsWith(`:${Math.floor(Date.now() / 60000)}`)) requestCounts.delete(existingKey);
+      if (!existingKey.endsWith(`:${minute}`)) {
+        requestCounts.delete(existingKey);
+      }
     }
   }
 
@@ -113,24 +120,14 @@ app.use("/api", (req, res, next) => {
   next();
 });
 
-// =====================================================
-// API ROUTES
-// =====================================================
-
+// API routes
 app.use("/api/educator", educatorRouter);
-
 app.use("/api/course", courseRouter);
-
 app.use("/api/user", userRouter);
-
 app.use("/api/platform", platformRouter);
-
 app.use("/api/admin", adminRouter);
 
-// =====================================================
-// 404 ROUTE
-// =====================================================
-
+// 404 fallback
 app.use((req, res) => {
   console.log(
     `404 Route Not Found: ${req.method} ${req.originalUrl}`
@@ -142,61 +139,52 @@ app.use((req, res) => {
   });
 });
 
-// =====================================================
-// DATABASE / CLOUDINARY INITIALIZATION
-// =====================================================
-
+// Database and Cloudinary initialization
 let initialized = false;
+let initializationPromise;
 
 const initializeServer = async () => {
-  if (initialized) {
-    return;
+  if (initialized) return;
+
+  if (!initializationPromise) {
+    initializationPromise = (async () => {
+      await connectDB();
+      await connectCloudinary();
+
+      initialized = true;
+      console.log("Server services initialized successfully");
+    })().catch((error) => {
+      initializationPromise = undefined;
+      throw error;
+    });
   }
 
-  await connectDB();
-
-  await connectCloudinary();
-
-  initialized = true;
-
-  console.log("Server services initialized successfully");
+  await initializationPromise;
 };
 
-// =====================================================
-// LOCAL DEVELOPMENT
-// =====================================================
-
+// Render and local Node.js server
 const PORT = process.env.PORT || 5000;
 
-if (process.env.NODE_ENV !== "production") {
+if (process.env.RENDER || process.env.NODE_ENV !== "production") {
   initializeServer()
     .then(() => {
-      app.listen(PORT, () => {
-        console.log(
-          `🚀 Server running on http://localhost:${PORT}`
-        );
+      app.listen(PORT, "0.0.0.0", () => {
+        console.log(`Server running on port ${PORT}`);
       });
     })
     .catch((error) => {
-      console.error("❌ Server failed:", error);
+      console.error("Server initialization failed:", error);
       process.exit(1);
     });
 }
 
-// =====================================================
-// VERCEL SERVERLESS HANDLER
-// =====================================================
-
+// Vercel serverless handler
 const handler = async (req, res) => {
   try {
     await initializeServer();
-
     return app(req, res);
   } catch (error) {
-    console.error(
-      "❌ Server initialization failed:",
-      error
-    );
+    console.error("Server initialization failed:", error);
 
     return res.status(500).json({
       success: false,
@@ -206,4 +194,3 @@ const handler = async (req, res) => {
 };
 
 export default handler;
-
